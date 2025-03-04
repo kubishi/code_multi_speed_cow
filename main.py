@@ -117,12 +117,32 @@ def plot_regions(V, P, CRFast, CRSlow, CRHybrid):
 def plot_heatmap(V: np.ndarray,
                  P: np.ndarray,
                  CR: np.ndarray,
-                 savepath: pathlib.Path):
+                 savepath: pathlib.Path,
+                 max_val: float = None,
+                 tick_step: float = 1.0) -> None:  # tick_step controls spacing between ticks
+    CR = np.copy(CR)
+    if max_val is not None:
+        CR[CR >= max_val] = max_val
+
     fig, ax = plt.subplots()
     c = ax.pcolormesh(V, P, CR, cmap='viridis')
+
     ax.set_xlabel(r'$v$', fontsize=16)
     ax.set_ylabel(r'$p$', fontsize=16)
-    fig.colorbar(c, ax=ax)
+    
+    cbar = fig.colorbar(c, ax=ax)  # Store the colorbar reference
+
+    c.set_clim(vmin=CR.min(), vmax=max_val)
+    tick_values = np.arange(CR.min(), CR.max() + tick_step, tick_step)
+    tick_values = [t for t in tick_values if t <= CR.max()]  # Ensure last tick is less than or equal to max value
+    cbar.set_ticks(tick_values)
+    labels = [f'${t:.2f}$' for t in tick_values]
+    print(labels)
+    if max_val is not None:
+        labels[-1] = f'$\geq {max_val}$'
+    cbar.set_ticklabels(labels)
+
+    ax.grid(True)
     plt.tight_layout()
     plt.savefig(savepath)
     plt.close()
@@ -142,24 +162,24 @@ def main():
     print("Generating plots...")
     plot_regions(V, P, CRFast, CRSlow, CRHybrid)
 
-    # Clip for CR Plotting
-    idx_p = np.where(p_vals > 0.1)
-    idx_v = np.where(v_vals > 0.1)
-    V = V[idx_v[0]][:, idx_p[0]]
-    P = P[idx_v[0]][:, idx_p[0]]
-    CRFast = CRFast[idx_v[0]][:, idx_p[0]]
-    CRSlow = CRSlow[idx_v[0]][:, idx_p[0]]
-    CRHybrid = CRHybrid[idx_v[0]][:, idx_p[0]]
+    # # Clip for CR Plotting
+    # idx_p = np.where(p_vals > 0.1)
+    # idx_v = np.where(v_vals > 0.1)
+    # V = V[idx_v[0]][:, idx_p[0]]
+    # P = P[idx_v[0]][:, idx_p[0]]
+    # CRFast = CRFast[idx_v[0]][:, idx_p[0]]
+    # CRSlow = CRSlow[idx_v[0]][:, idx_p[0]]
+    # CRHybrid = CRHybrid[idx_v[0]][:, idx_p[0]]
 
-    plot_heatmap(V, P, CRFast, pathlib.Path('CRFast.pdf'))
-    plot_heatmap(V, P, CRSlow, pathlib.Path('CRSlow.pdf'))
-    plot_heatmap(V, P, CRHybrid, pathlib.Path('CRHybrid.pdf'))
+    plot_heatmap(V, P, CRFast, pathlib.Path('CRFast.pdf'), max_val=20.0)
+    plot_heatmap(V, P, CRSlow, pathlib.Path('CRSlow.pdf'), max_val=20.0)
+    plot_heatmap(V, P, CRHybrid, pathlib.Path('CRHybrid.pdf'), max_val=20.0)
 
     CRMin = np.minimum(np.minimum(CRFast, CRSlow), CRHybrid)
-    plot_heatmap(V, P, CRMin, pathlib.Path('CRMin.pdf'))
+    plot_heatmap(V, P, CRMin, pathlib.Path('CRMin.pdf'), max_val=20.0)
 
     CRMinNoHybrid = np.minimum(CRFast, CRSlow)
-    plot_heatmap(V, P, CRMinNoHybrid, pathlib.Path('CRMinNoHybrid.pdf'))
+    plot_heatmap(V, P, CRMinNoHybrid, pathlib.Path('CRMinNoHybrid.pdf'), max_val=20.0)
 
     CRDiff = CRMinNoHybrid - CRMin
     plot_heatmap(V, P, CRDiff, pathlib.Path('CRDiff.pdf'))
