@@ -1,37 +1,32 @@
-from functools import lru_cache, wraps
-from typing import Tuple
+from itertools import product
+import pathlib
 import numpy as np
 import scipy.optimize as opt
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-def expr1(a: float, b: float, v: float, p: float) -> float:
-    """Case 1 competitive ratio (agent finds target during scout-ahead)
-    
-    Args:
-        a (float): expansion ratio
-        b (float): scout-ahead percentage
-        v (float): slow speed of agent
-        p (float): probability of finding a target while moving at fast speed
+# enable latex rendering
+plt.rc('text', usetex=True)
 
-    Returns:
-        float: competitive ratio
-    """
-    return ((1 + a) * ((-1 + a) * (a * (-1 + p)**2 - (-2 + p) * p) + (a**2 +
-              2 * (-1 + a) * a**3 * b + 2 * p - 2 * a * (a + b + a**2 * (-3 + 2 * a) * b) * p +
-              (-1 + a) * (1 + a + 2 * (-1 + a) * a**2 * b) * p**2) * v)) / ((-1 + a) * a * v)
+# ALG_COLORS = {
+#     "Fast": "#D81B60",
+#     "Hybrid": "#1E88E5",
+#     "Slow": "#FFC107",
+# }
+
+# https://davidmathlogic.com/colorblind/#%23332288-%23117733-%2344AA99-%2388CCEE-%23DDCC77-%23CC6677-%23AA4499-%23882255
+ALG_COLORS = {
+    "Fast": "#332288",
+    "Hybrid": "#DDCC77",
+    "Slow": "#117733",
+}
+
+def expr1(a, b, v, p):
+    return ((1 + a) * ((-1 + a) * (a * (-1 + p)**2 - (-2 + p) * p) + 
+            (a**2 + 2 * (-1 + a) * a**3 * b + 2 * p - 2 * a * (a + b + a**2 * (-3 + 2 * a) * b) * p +
+            (-1 + a) * (1 + a + 2 * (-1 + a) * a**2 * b) * p**2) * v)) / ((-1 + a) * a * v)
 
 def expr2(a, b, v):
-    """Case 2 competitive ratio (agent does not find target during scout-ahead)
-    
-    Args:
-        a (float): expansion ratio
-        b (float): scout-ahead percentage
-        v (float): slow speed of agent
-
-    Returns:
-        float: competitive ratio
-    """
     return (-1 + b + a * (-b + v + a * (1 + v + (-1 + a) * b * (1 + 2 * (1 + a) * v)))) / ((-1 + a) * (1 + (-1 + a**2) * b) * v)
 
 def objective(params, v, p):
@@ -39,21 +34,25 @@ def objective(params, v, p):
     return max(expr1(a, b, v, p), expr2(a, b, v))
 
 def optimize_a_b(v, p):
-    initial_guess = [2, 0.5]  # Start with a = 2 and b = 0.5
-    bounds = [(1, None), (0, 1)]  # Ensure a > 1 and 0 <= b <= 1 
+    initial_guess = [2, 0.5]
+    bounds = [(1.001, 10), (0, 1)]  
     result = opt.minimize(objective, initial_guess, args=(v, p), bounds=bounds, method='Nelder-Mead')
-    return result.x if result.success else (None, None)
+    
+    return result.x if result.success else (2, 0.5)  
 
+@np.vectorize
 def cr_fast(p):
     return 8 / p + p / (2 - p)
 
+@np.vectorize
 def cr_slow(v):
     return 3 + 2 * np.sqrt(2 + 2 / v) + 2 / v
 
-def cr_hybrid(V: np.ndarray, P: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def cr_hybrid(V, P):
     A = np.zeros_like(V)
     B = np.zeros_like(V)
     CRHybrid = np.zeros_like(P)
+
     for i in range(P.shape[0]):
         for j in range(P.shape[1]):
             v = V[i, j]
@@ -61,149 +60,109 @@ def cr_hybrid(V: np.ndarray, P: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.
             a_opt, b_opt = optimize_a_b(v, p)
             A[i, j] = a_opt
             B[i, j] = b_opt
-            if a_opt is not None and b_opt is not None:
-                CRHybrid[i, j] = max(expr1(a_opt, b_opt, v, p), expr2(a_opt, b_opt, v))
-            else:
-                CRHybrid[i, j] = np.nan  # Set invalid points to NaN
-
+            CRHybrid[i, j] = max(expr1(a_opt, b_opt, v, p), expr2(a_opt, b_opt, v))
+    
     return A, B, CRHybrid
 
-def plot_results(V: np.ndarray,
+def plot_regions(V, P, CRFast, CRSlow, CRHybrid):
+    """
+    Fixes:
+    - Ensures all three regions are visible distinctly.
+    - Uses numerical encoding for region identification.
+    - Plots with a discrete colormap.
+    """    
+    # 0 = Fast is best (default)
+    # 1 = Hybrid is best
+    # 2 = Slow is best
+    Zslow = np.zeros_like(V)
+    Zhybrid = np.zeros_like(V)
+
+    Zhybrid[CRHybrid < CRFast] = 1  # Hybrid is better than Fast
+    Zslow[CRSlow < CRFast] = 2  # Slow is better than Fast
+
+    ax_slow: plt.Axes
+    ax_hybrid: plt.Axes
+    fig, (ax_slow, ax_hybrid) = plt.subplots(1, 2, figsize=(12, 6))
+    ctr_slow = ax_slow.contourf(V, P, Zslow, levels=[-0.5, 1.0, 2.5], colors=[ALG_COLORS[k] for k in ["Fast", "Slow"]])
+    ctr_hybrid = ax_hybrid.contourf(V, P, Zhybrid, levels=[-0.5, 0.5, 1.5], colors=[ALG_COLORS[k] for k in ["Fast", "Hybrid"]])
+
+    for ctr in [ctr_slow, ctr_hybrid]:
+        for a in ctr.collections:
+            a.set_edgecolor("face")
+
+    for ax in [ax_slow, ax_hybrid]:
+        ax.set_xlabel(r'$v$', fontsize=16)
+        ax.set_ylabel(r'$p$', fontsize=16)
+        ax.grid(True)
+        ax.set_aspect('equal')
+        # set tick font size
+        ax.tick_params(axis='both', which='major', labelsize=16)
+        ax.tick_params(axis='both', which='minor', labelsize=16)
+
+        if ax == ax_slow:
+            labels = [r"$CR_{Fast} \leq CR_{Slow}$", r"$CR_{Slow} < CR_{Fast}$"]
+            handles = [plt.Rectangle((0, 0), 1, 1, color=color) for color in [ALG_COLORS["Fast"], ALG_COLORS["Slow"]]]
+            ax.legend(handles, labels, loc="upper left", fontsize=16)
+        else:
+            labels = [r"$CR_{Fast} \leq CR_{Hybrid}$", r"$CR_{Hybrid} < CR_{Fast}$"]
+            handles = [plt.Rectangle((0, 0), 1, 1, color=color) for color in [ALG_COLORS["Fast"], ALG_COLORS["Hybrid"]]]
+            ax.legend(handles, labels, loc="upper left", fontsize=16)
+
+
+    fig.tight_layout()
+
+    fig.savefig('regions.pdf')
+    plt.close(fig)
+
+def plot_heatmap(V: np.ndarray,
                  P: np.ndarray,
-                 CRFast: np.ndarray,
-                 CRSlow: np.ndarray,
-                 CRHybrid: np.ndarray,
-                 alpha: float = 0.6):
-    ax: Axes3D
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-
-    ax.plot_surface(V, P, CRHybrid, color='blue', alpha=alpha, label='CRHybrid')
-    ax.plot_surface(V, P, CRFast, color='red', alpha=alpha, label='CRFast')    
-    ax.plot_surface(V, P, CRSlow, color='green', alpha=alpha, label='CRSlow')
-    
-    ax.set_xlabel('v')
-    ax.set_ylabel('p')
-    ax.set_zlabel('Max Expression Value')
-    ax.set_title('Comparison of CRHybrid, CRFast, and CRSlow')
-
-    # legend
-    plt.legend()
-
-    # plt.show()
-    for elev, azim in [(30, 30), (30, 150), (30, 270), (30, 390)]:
-        ax.view_init(elev=elev, azim=azim)
-        plt.savefig(f'CR_{elev}_{azim}.png')
-    
+                 CR: np.ndarray,
+                 savepath: pathlib.Path):
+    fig, ax = plt.subplots()
+    c = ax.pcolormesh(V, P, CR, cmap='viridis')
+    ax.set_xlabel(r'$v$', fontsize=16)
+    ax.set_ylabel(r'$p$', fontsize=16)
+    fig.colorbar(c, ax=ax)
+    plt.tight_layout()
+    plt.savefig(savepath)
     plt.close()
-
-def plot_comparison_curves(V: np.ndarray,
-                           P: np.ndarray,
-                           CRFast: np.ndarray,
-                           CRSlow: np.ndarray,
-                           CRHybrid: np.ndarray):
-    # Find where CRHybrid == CRFast
-    diff_hf = np.abs(CRHybrid - CRFast)
-    curve_hf = np.where(diff_hf < 0.1)  # Tolerance for equality
-
-    # Find where CRHybrid == CRSlow
-    diff_hs = np.abs(CRHybrid - CRSlow)
-    curve_hs = np.where(diff_hs < 0.1)
-
-    # Find where CRSlow == CRFast
-    diff_sf = np.abs(CRSlow - CRFast)
-    curve_sf = np.where(diff_sf < 0.1)
-
-    # Plot the curves
-    plt.figure(figsize=(8, 6))
-    plt.contour(P, V, CRHybrid, levels=20, cmap='coolwarm', alpha=0.3)
-    plt.scatter(P[curve_hf], V[curve_hf], color='red', label='CRHybrid == CRFast', s=5)
-    plt.scatter(P[curve_hs], V[curve_hs], color='blue', label='CRHybrid == CRSlow', s=5)
-    plt.scatter(P[curve_sf], V[curve_sf], color='green', label='CRSlow == CRFast', s=5)
-
-    plt.xlabel('p')
-    plt.ylabel('v')
-    plt.title('Comparison Curves: CRHybrid, CRFast, CRSlow')
-    plt.legend()
-    plt.grid(True)
-    # plt.show()
-    plt.savefig('comparison_curves.png')
-    plt.close()
-
-def plot_advantage_regions(V: np.ndarray,
-                           P: np.ndarray,
-                           CRFast: np.ndarray,
-                           CRSlow: np.ndarray,
-                           CRHybrid: np.ndarray):
-    """
-    Plots regions where CRHybrid is better than CRFast and where CRSlow is better than CRFast.
-
-    Args:
-        V (np.ndarray): Meshgrid of v values.
-        P (np.ndarray): Meshgrid of p values.
-        CRFast (np.ndarray): Competitive ratio of fast search.
-        CRSlow (np.ndarray): Competitive ratio of slow search.
-        CRHybrid (np.ndarray): Competitive ratio of hybrid search.
-    """
-    # Compute regions
-    hybrid_better_than_fast = (CRHybrid < CRFast)  # Where CRHybrid is better than CRFast
-    slow_better_than_fast = (CRSlow < CRFast)  # Where CRSlow is better than CRFast
-
-    plt.figure(figsize=(8, 6))
-
-    # Plot the regions
-    plt.contourf(P, V, hybrid_better_than_fast, levels=1, colors=['blue'], alpha=0.5, label="CRHybrid < CRFast")
-    plt.contourf(P, V, slow_better_than_fast, levels=1, colors=['green'], alpha=0.5, label="CRSlow < CRFast")
-
-    # Contours for visualization
-    plt.contour(P, V, CRHybrid, levels=20, cmap='coolwarm', alpha=0.3)
-
-    # Labels and legend
-    plt.xlabel('p')
-    plt.ylabel('v')
-    plt.title('Regions where CRHybrid and CRSlow are Better than CRFast')
-    plt.legend(["CRHybrid < CRFast (Blue)", "CRSlow < CRFast (Green)"])
-    plt.grid(True)
-
-    # Save and show
-    plt.savefig('advantage_regions.png')
-    # plt.show()
-    plt.close()
-
 
 def main():
-    # Define p_vals and v_vals
-    p_vals = np.linspace(0.0, 1, 100)
-    v_vals = np.linspace(0.0, 1, 100)
+    n_points = 100
+    p_vals = np.linspace(0.001, 1, n_points)
+    v_vals = np.linspace(0.001, 1, n_points)
 
-    # Create meshgrid
     P, V = np.meshgrid(p_vals, v_vals)
 
-    # Compute CRFast and CRSlow
+    print("Calculating CRFast, CRSlow, and CRHybrid...")
     CRFast = cr_fast(P)
     CRSlow = cr_slow(V)
     A, B, CRHybrid = cr_hybrid(V, P)
 
-    # Find index ranges where values are greater than 0.25
-    p_index = np.where(p_vals > 0.25)[0]
-    v_index = np.where(v_vals > 0.25)[0]
-    idx = np.ix_(v_index, p_index)
+    print("Generating plots...")
+    plot_regions(V, P, CRFast, CRSlow, CRHybrid)
 
-    plot_results(
-        V=V[idx],
-        P=P[idx],
-        CRFast=CRFast[idx],
-        CRSlow=CRSlow[idx],
-        CRHybrid=CRHybrid[idx]
-    )
-    plot_comparison_curves(
-        V=V, P=P, CRFast=CRFast, CRSlow=CRSlow, CRHybrid=CRHybrid
-    )
-    plot_advantage_regions(
-        V=V, P=P, CRFast=CRFast, CRSlow=CRSlow, CRHybrid=CRHybrid
-    )
-    
+    # Clip for CR Plotting
+    idx_p = np.where(p_vals > 0.1)
+    idx_v = np.where(v_vals > 0.1)
+    V = V[idx_v[0]][:, idx_p[0]]
+    P = P[idx_v[0]][:, idx_p[0]]
+    CRFast = CRFast[idx_v[0]][:, idx_p[0]]
+    CRSlow = CRSlow[idx_v[0]][:, idx_p[0]]
+    CRHybrid = CRHybrid[idx_v[0]][:, idx_p[0]]
 
+    plot_heatmap(V, P, CRFast, pathlib.Path('CRFast.pdf'))
+    plot_heatmap(V, P, CRSlow, pathlib.Path('CRSlow.pdf'))
+    plot_heatmap(V, P, CRHybrid, pathlib.Path('CRHybrid.pdf'))
+
+    CRMin = np.minimum(np.minimum(CRFast, CRSlow), CRHybrid)
+    plot_heatmap(V, P, CRMin, pathlib.Path('CRMin.pdf'))
+
+    CRMinNoHybrid = np.minimum(CRFast, CRSlow)
+    plot_heatmap(V, P, CRMinNoHybrid, pathlib.Path('CRMinNoHybrid.pdf'))
+
+    CRDiff = CRMinNoHybrid - CRMin
+    plot_heatmap(V, P, CRDiff, pathlib.Path('CRDiff.pdf'))
 
 if __name__ == "__main__":
     main()
